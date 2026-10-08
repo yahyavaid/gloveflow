@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  GloveFlow aggregate practice-session API. Cognito access tokens isolate each user's
+  results in DynamoDB. Stores no camera, landmark, clinical, or free-text data.
+  Intended for a small invited portfolio test group in us-east-2.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:5173
+    AllowedPattern: '^(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://localhost:[0-9]{1,5})$'
+    Description: Exact frontend origin, with no trailing slash; localhost is development only.
+  CallbackUrl:
+    Type: String
+    Default: http://localhost:5173/callback
+    AllowedPattern: '^(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://localhost:[0-9]{1,5})/[^#\s]*$'
+    Description: Exact OAuth callback; must be implemented by the future frontend integration.
+  CognitoDomainPrefix:
+    Type: String
+    MinLength: 3
+    MaxLength: 40
+    AllowedPattern: '^[a-z0-9][a-z0-9-]*[a-z0-9]$'
+    Description: Choose a unique regional hosted-login prefix, for example gloveflow-your-initials-demo.
+Rules:
+  SelectedRegionOnly:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', us-east-2]
+        AssertDescription: Deploy this portfolio project only in the selected region us-east-2.
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  SessionTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context: >-
+        One encrypted table stores strict aggregate records by verified Cognito subject.
+        No scan or cross-user index is needed. Retain protects results on stack deletion;
+        explicit table removal is required for complete teardown.
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: GloveFlow
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context: >-
+        A dedicated invited-testers pool provides access-token subjects. Public self-signup
+        is disabled. TOTP MFA avoids SMS costs. Retain avoids silently deleting tester identities.
+    Properties:
+      UserPoolTier: LITE
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      UsernameConfiguration:
+        CaseSensitive: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 3
+      MfaConfiguration: 'ON'
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      UserPoolTags:
+        Project: GloveFlow
+  SessionScopes:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Metadata:
+      com.aws.cloudformation.Context: The custom sessions scope prevents ID tokens from authorizing API routes.
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: gloveflow
+      Name: GloveFlow practice sessions
+      Scopes:
+        - ScopeName: sessions
+          ScopeDescription: Create, list, and delete only your own aggregate practice sessions.
+  AppClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: SessionScopes
+    Metadata:
+      com.aws.cloudformation.Context: >-
+        Public browser client has no secret. Only authorization-code OAuth is allowed;
+        the frontend must use S256 PKCE, validate state, and keep tokens out of logs and URLs.
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, gloveflow/sessions]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: [!Ref CallbackUrl]
+      LogoutURLs: [!Ref AllowedOrigin]
+      DefaultRedirectURI: !Ref CallbackUrl
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 1
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+      RefreshTokenRotation:
+        Feature: ENABLED
+        RetryGracePeriodSeconds: 10
+      ReadAttributes: [email, email_verified]
+      WriteAttributes: [email]
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Metadata:
+      com.aws.cloudformation.Context: A regional Cognito-hosted classic login supports the Lite pool without a custom domain.
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref CognitoDomainPrefix
+      ManagedLoginVersion: 1
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context: Seven-day request diagnostics omit tokens, identities, client IPs, and request bodies.
+    Properties:
+      RetentionInDays: 7
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Metadata:
+      com.aws.cloudformation.Context: >-
+        Three JWT-protected routes accept access tokens for this client and issuer only.
+        Exact-origin CORS handles unauthenticated preflight. Low stage throttles limit demo traffic;
+        throttling is best-effort, not a spend cap.
+    Properties:
+      StageName: '$default'
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+        AllowHeaders: [Authorization, Content-Type]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 5
+        ThrottlingRateLimit: 2
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","route":"$context.routeKey","status":"$context.status","latency":"$context.responseLatency"}'
+      Auth:
+        DefaultAuthorizer: SessionAuthorizer
+        Authorizers:
+          SessionAuthorizer:
+            AuthorizationScopes: [gloveflow/sessions]
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}'
+              audience: [!Ref AppClient]
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context: Explicit bounded-retention logs let the runtime role omit CreateLogGroup permission.
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-sessions'
+      RetentionInDays: 7
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context: >-
+        Lambda can only GetItem, PutItem, Query, and DeleteItem in this table and write its
+        own logs. It has no scans, identity administration, or unrelated service permissions.
+        The handler must enforce each verified subject because this role serves all testers.
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SessionsAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query, dynamodb:DeleteItem]
+                Resource: !GetAtt SessionTable.Arn
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt FunctionLogGroup.Arn
+  SessionFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      com.aws.cloudformation.Context: >-
+        A synchronous Python handler validates a 4-KiB schema and serves pages of at most 25
+        small records. No VPC, public function URL, asynchronous queue, or paid AI integration.
+        The stack-derived name matches the explicit log group without a circular dependency.
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-sessions'
+      CodeUri: src/
+      Handler: handler.lambda_handler
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt FunctionRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SessionTable
+          APP_CLIENT_ID: !Ref AppClient
+      Events:
+        CreateSession:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /sessions
+            Method: POST
+            PayloadFormatVersion: '2.0'
+        ListSessions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /sessions
+            Method: GET
+            PayloadFormatVersion: '2.0'
+        DeleteSession:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /sessions/{session_id}
+            Method: DELETE
+            PayloadFormatVersion: '2.0'
+Outputs:
+  ApiUrl:
+    Description: Authenticated API base URL; no public data routes.
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  UserPoolId:
+    Description: Dedicated tester user pool; retained on stack deletion.
+    Value: !Ref UserPool
+  AppClientId:
+    Description: Public OAuth client identifier; not a secret.
+    Value: !Ref AppClient
+  LoginBaseUrl:
+    Description: Cognito OAuth login base; frontend PKCE integration is still required.
+    Value: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
+  SessionTableName:
+    Description: Retained table name; record this before a full teardown.
+    Value: !Ref SessionTable
+  Region:
+    Description: Selected deployment region.
+    Value: !Ref 'AWS::Region'

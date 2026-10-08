@@ -1,0 +1,5 @@
+node_modules/
+release/
+renderer/vendor/
+.DS_Store
+*.log

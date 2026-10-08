@@ -1,1 +1,1 @@
-{"name":"gloveflow","version":"0.1.0","private":true,"type":"module","scripts":{"start":"node scripts/serve.mjs","test":"node --test tests/*.test.mjs","check":"node --check dist/app.js && node --check dist/gestures.js"}}
+{"name":"gloveflow","version":"0.2.0","private":true,"type":"module","scripts":{"start":"node scripts/serve.mjs","test":"node --test tests/*.test.mjs","check":"node --check dist/app.js && node --check dist/gestures.js && node --check dist/interaction.js"}}

@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "gloveflow-cloud"
+region = "us-east-2"
+
+[default.deploy.parameters]
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+fail_on_empty_changeset = false
+
+[default.delete.parameters]
+region = "us-east-2"

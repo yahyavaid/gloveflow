@@ -22,3 +22,35 @@ test('invalid landmarks fail closed',()=>{const e=new GestureEngine();for(const 
 test('the pointer is bounded and smoothing reduces sudden motion',()=>{const e=new GestureEngine();e.update(hand(),100);const p=e.update(hand({x:-2,y:-2}),133);assert.ok(p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1);assert.ok(p.x<1&&p.y>0);});
 test('a folded hand is distinct from pointing and does not activate a click',()=>{const points=hand();points[8]={x:.45,y:.74};const gesture=new GestureEngine().update(points,100);assert.equal(gesture.mode,'fist');assert.equal(gesture.click,false);});
 test('an open palm is distinct from pointing and two-finger scrolling',()=>{const points=hand({scroll:true});points[16]={x:.58,y:.29};points[20]={x:.64,y:.31};const gesture=new GestureEngine().update(points,100);assert.equal(gesture.mode,'palm');assert.equal(gesture.click,false);assert.equal(gesture.scrollDelta,0);});
+
+test('the pointer stays on its selected target throughout a pinch',()=>{
+ const e=new GestureEngine(),before=e.update(hand(),100);
+ const first=e.update(hand({pinch:true,x:.62,y:.4}),160);
+ const clicked=e.update(hand({pinch:true,x:.65,y:.44}),270);
+ assert.equal(clicked.click,true);assert.equal(first.x,before.x);assert.equal(first.y,before.y);
+ assert.equal(clicked.x,before.x);assert.equal(clicked.y,before.y);
+ const release=e.update(hand({x:.62,y:.4}),320);assert.notEqual(release.x,before.x);
+});
+test('pinch hysteresis tolerates threshold noise without cancelling or repeating selection',()=>{
+ const e=new GestureEngine();e.update(hand(),100);e.update(hand({pinch:true}),160);
+ const noise=hand();noise[4]={x:noise[8].x+.24*.32,y:noise[8].y};
+ assert.equal(e.update(noise,210).mode,'pinch');assert.equal(e.update(hand({pinch:true}),270).click,true);
+ e.update(noise,310);assert.equal(e.update(hand({pinch:true}),440).click,false);
+});
+test('a natural fist with touching thumb and index cannot select',()=>{
+ const e=new GestureEngine();e.update(hand(),100);
+ const fist=hand({pinch:true,x:.45,y:.74});
+ for(const time of [160,270,400,620]){const result=e.update(fist,time);assert.equal(result.mode,'fist');assert.equal(result.click,false);}
+});
+test('scroll jitter is filtered and scrolling keeps the pointer steady',()=>{
+ const e=new GestureEngine(),before=e.update(hand(),100);e.update(hand({scroll:true}),145);
+ for(const [i,y]of [.302,.298,.301,.3].entries()){
+  const result=e.update(hand({scroll:true,y}),190+i*45);
+  assert.equal(result.scrollDelta,0);assert.equal(result.x,before.x);assert.equal(result.y,before.y);
+ }
+});
+test('switching from scrolling directly to pinch cannot click a stale target',()=>{
+ const e=new GestureEngine();e.update(hand(),100);e.update(hand({scroll:true}),150);
+ e.update(hand({pinch:true}),200);assert.equal(e.update(hand({pinch:true}),320).click,false);
+ e.update(hand(),380);e.update(hand({pinch:true}),430);assert.equal(e.update(hand({pinch:true}),540).click,true);
+});

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.aws-sam/
+.venv/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store

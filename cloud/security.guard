@@ -1,0 +1,32 @@
+# Focused safeguards for the source SAM template. Run before deployment.
+rule retained_encrypted_session_data {
+  Resources.SessionTable.DeletionPolicy == 'Retain'
+  Resources.SessionTable.UpdateReplacePolicy == 'Retain'
+  Resources.SessionTable.Properties.BillingMode == 'PAY_PER_REQUEST'
+  Resources.SessionTable.Properties.SSESpecification.SSEEnabled == true
+}
+
+rule invited_testers_and_mfa {
+  Resources.UserPool.DeletionPolicy == 'Retain'
+  Resources.UserPool.Properties.AdminCreateUserConfig.AllowAdminCreateUserOnly == true
+  Resources.UserPool.Properties.MfaConfiguration == 'ON'
+  Resources.UserPool.Properties.EnabledMfas == ['SOFTWARE_TOKEN_MFA']
+}
+
+rule public_client_uses_code_flow {
+  Resources.AppClient.Properties.GenerateSecret == false
+  Resources.AppClient.Properties.AllowedOAuthFlows == ['code']
+  Resources.AppClient.Properties.EnableTokenRevocation == true
+  Resources.AppClient.Properties.RefreshTokenRotation.Feature == 'ENABLED'
+}
+
+rule api_requires_session_authorizer {
+  Resources.HttpApi.Properties.Auth.DefaultAuthorizer == 'SessionAuthorizer'
+  Resources.HttpApi.Properties.Auth.Authorizers.SessionAuthorizer.AuthorizationScopes == ['gloveflow/sessions']
+  Resources.HttpApi.Properties.CorsConfiguration.AllowOrigins[*] != '*'
+}
+
+rule bounded_log_retention {
+  Resources.FunctionLogGroup.Properties.RetentionInDays == 7
+  Resources.ApiLogGroup.Properties.RetentionInDays == 7
+}
