@@ -4,10 +4,11 @@ const {pathToFileURL}=require('node:url');
 const {createNativeDriver}=require('./native/coregraphics.cjs');
 const {createController}=require('./native/controller.cjs');
 protocol.registerSchemesAsPrivileged([{scheme:'gloveflow',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
-let window,controller,heartbeat,stopAckTimer,stopSequence=0,waitingForStopAck=false;
+let window,controller,heartbeat,stopAckTimer,stopSequence=0,waitingForStopAck=false,lastControlState='';
 const origin='gloveflow://app';
 const validSender=event=>window&&!window.isDestroyed()&&event.sender===window.webContents&&event.senderFrame===window.webContents.mainFrame&&event.senderFrame.url.startsWith(origin+'/');
 function notifyStopped(reason){
+ lastControlState='';
  if(!window||window.isDestroyed())return;
  const token=++stopSequence;waitingForStopAck=true;clearTimeout(stopAckTimer);window.webContents.send('tracking-stopped',reason,token);
  // If inference hangs, a renderer message cannot release camera capture.
@@ -15,6 +16,12 @@ function notifyStopped(reason){
  stopAckTimer=setTimeout(()=>{if(window&&!window.isDestroyed())window.destroy();},1000);
 }
 function stop(reason='Stopped'){const wasEnabled=controller?.status().enabled;controller?.stop(reason);if(!wasEnabled)notifyStopped(reason);}
+function publishControlState(){
+ if(!window||window.isDestroyed())return;
+ const status=controller.status(),serialized=JSON.stringify(status);
+ if(status.enabled&&serialized!==lastControlState){lastControlState=serialized;window.webContents.send('control-state',status);}
+ if(!status.enabled)lastControlState='';
+}
 function trustedHandler(channel,handler){ipcMain.handle(channel,(event,...args)=>{if(!validSender(event))throw new Error('Untrusted request.');return handler(...args);});}
 app.whenReady().then(()=>{
  const rendererRoot=path.join(__dirname,'renderer');
@@ -45,7 +52,7 @@ app.whenReady().then(()=>{
  trustedHandler('pause',paused=>{if(typeof paused!=='boolean')throw new Error('Invalid pause state');return controller.setPaused(paused);});
  trustedHandler('stop',()=>{stop('Stopped by you');return controller.status();});
  ipcMain.on('stop-ack',(event,token)=>{if(validSender(event)&&token===stopSequence){clearTimeout(stopAckTimer);waitingForStopAck=false;}});
- ipcMain.on('frame',(event,frame)=>{if(!validSender(event))return;controller.handleFrame(frame);});
+ ipcMain.on('frame',(event,frame)=>{if(!validSender(event))return;controller.handleFrame(frame);publishControlState();});
  heartbeat=setInterval(()=>controller.checkHeartbeat(),100);
  if(!globalShortcut.register('CommandOrControl+Shift+G',()=>stop('Emergency stop'))){
   // Starting is gated in the renderer if this shortcut is unavailable.

@@ -66,6 +66,59 @@ test('scroll is capped and never moves or clicks the cursor', () => {
   f.frame('scroll', {scrollDelta: 1e9}); f.tick(45); f.frame('scroll', {scrollDelta: -1e9});
   assert.deepEqual(f.calls, [['scroll', 55], ['scroll', -55]]);
 });
+test('scroll resumes after a missed or ambiguous hand once two fingers are stable', () => {
+  for (const interruption of ['none', 'rest', 'fist']) {
+    const f = fixture(); f.controller.enable(); f.frame('point');
+    f.tick(45); f.frame('scroll', {scrollDelta: 20});
+    f.tick(45); f.frame(interruption);
+    assert.equal(f.controller.status().scrollReady, false);
+    for (let i = 0; i < 5; i++) { f.tick(45); f.frame('scroll', {scrollDelta: 20}); }
+    assert.equal(f.controller.status().scrollReady, true, interruption);
+    assert.equal(f.controller.status().armed, false, interruption);
+    assert.deepEqual(f.calls, [['scroll', 20]], 'The recovery delta is discarded.');
+    f.tick(45); f.frame('scroll', {scrollDelta: 7});
+    assert.deepEqual(f.calls, [['scroll', 20], ['scroll', 7]], interruption);
+    assert.match(f.controller.status().reason, /scrolling is active/);
+  }
+});
+test('scroll recovery never permits a pinch click until a released point or palm', () => {
+  const f = fixture(); f.controller.enable();
+  for (let i = 0; i < 5; i++) { f.tick(45); f.frame('scroll', {scrollDelta: 20}); }
+  f.tick(45); f.frame('scroll', {scrollDelta: 7});
+  for (let i = 0; i < 5; i++) { f.tick(45); f.frame('pinch', {click: true}); }
+  assert.deepEqual(f.calls, [['scroll', 7]]);
+  assert.equal(f.controller.status().armed, false);
+  assert.equal(f.controller.status().scrollReady, false);
+  assert.match(f.controller.status().reason, /Release your pinch/);
+  f.tick(45); f.frame('point');
+  f.tick(45); f.frame('pinch', {click: true});
+  assert.equal(f.calls.filter(call => call[0] === 'click').length, 1);
+  assert.match(f.controller.status().reason, /Release your pinch to click again/);
+});
+test('interrupted two-finger poses cannot accumulate a scroll recovery hold', () => {
+  const f = fixture(); f.controller.enable();
+  for (let i = 0; i < 4; i++) { f.tick(45); f.frame('scroll', {scrollDelta: 20}); }
+  f.tick(45); f.frame('rest');
+  for (let i = 0; i < 4; i++) { f.tick(45); f.frame('scroll', {scrollDelta: 20}); }
+  assert.equal(f.controller.status().scrollReady, false);
+  assert.match(f.controller.status().reason, /Hold two fingers/);
+  f.tick(151); f.frame('scroll', {scrollDelta: 20});
+  assert.equal(f.controller.status().enabled, true);
+  assert.equal(f.controller.status().scrollReady, false, 'A long frame gap restarts the hold.');
+  assert.deepEqual(f.calls, []);
+});
+test('pausing clears scroll readiness and resumed scrolling needs a new hold', () => {
+  const f = fixture(); f.controller.enable(); f.frame('palm');
+  f.tick(45); f.frame('scroll', {scrollDelta: 20});
+  f.controller.setPaused(true);
+  for (let i = 0; i < 5; i++) { f.tick(45); f.frame('scroll', {scrollDelta: 20}); }
+  assert.equal(f.controller.status().scrollReady, false);
+  f.controller.setPaused(false);
+  for (let i = 0; i < 5; i++) { f.tick(45); f.frame('scroll', {scrollDelta: 20}); }
+  assert.deepEqual(f.calls, [['scroll', 20]]);
+  f.tick(45); f.frame('scroll', {scrollDelta: -7});
+  assert.deepEqual(f.calls, [['scroll', 20], ['scroll', -7]]);
+});
 test('pause and missing hands produce no input and require re-arming', () => {
   const f = fixture(); f.controller.enable(); f.frame('palm');
   f.controller.setPaused(true); f.tick(45); f.frame('pinch', {click: true});

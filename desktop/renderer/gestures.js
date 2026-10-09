@@ -4,16 +4,31 @@ const distance=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
 export class GestureEngine {
   constructor(){this.threshold=.28;this.smoothing=.65;this.reset();}
   reset(){
-    this.pointer=null;this.lastTime=null;this.armed=false;this.pinchStart=null;
+    this.pointer=null;this.lastTime=null;this.lastValidTime=null;this.armed=false;this.pinchStart=null;
     this.pinching=false;this.latched=false;this.lastClick=-Infinity;
     this.scrollY=null;this.scrollAnchor=null;this.previousMode='none';
+    this.returningFromScroll=false;this.pointSince=null;
+  }
+  loseTracking(now){
+    // A missed camera frame must cancel an action without discarding the cursor's
+    // smoothing history. After a longer absence, a newly found hand starts fresh.
+    if(this.lastValidTime===null||now-this.lastValidTime>300){
+      this.pointer=null;this.returningFromScroll=false;
+    }
+    this.lastTime=null;this.armed=false;this.pinchStart=null;
+    this.pinching=false;this.latched=false;
+    this.scrollY=null;this.scrollAnchor=null;this.previousMode='none';
+    this.pointSince=null;
+    // Keep lastClick: losing tracking must not bypass the click cooldown.
   }
   update(points,now){
     if(!Array.isArray(points)||points.length!==21||points.some(p=>!Number.isFinite(p?.x)||!Number.isFinite(p?.y))){
-      this.reset();return {mode:'none',click:false};
+      this.loseTracking(now);return {mode:'none',click:false};
     }
-    if(this.lastTime!==null&&now-this.lastTime>300)this.reset();
-    const delta=this.lastTime!==null?Math.max(1,now-this.lastTime):33;this.lastTime=now;
+    if(this.lastValidTime!==null&&now-this.lastValidTime>300)this.loseTracking(now);
+    // Do not turn a delayed frame into a large catch-up jump.
+    const delta=this.lastTime!==null?clamp(now-this.lastTime,1,50):33;
+    this.lastTime=now;this.lastValidTime=now;
     const palm=Math.max(.025,distance(points[5],points[17]));
     const ratio=distance(points[4],points[8])/palm;
     const fingerUp=(tip,pip)=>distance(points[tip],points[0])>distance(points[pip],points[0])*1.13;
@@ -25,7 +40,16 @@ export class GestureEngine {
       this.pinching=false;this.armed=true;this.latched=false;this.pinchStart=null;
     }else if(ratio<this.threshold){this.pinching=true;}
     const mode=fist?'fist':this.pinching?'pinch':index&&middle&&ring&&pinky?'palm':index&&middle&&!ring&&!pinky?'scroll':index?'point':'rest';
-    if(mode==='scroll'){this.armed=false;this.pinchStart=null;}
+    if(mode==='scroll')this.returningFromScroll=true;
+    if(this.returningFromScroll){
+      // During scrolling, a briefly folded middle finger can look like pointing.
+      // Require a settled pointing pose before moving or arming a click again.
+      if(mode==='point'){
+        this.pointSince??=now;
+        if(now-this.pointSince>=150)this.returningFromScroll=false;
+      }else this.pointSince=null;
+      if(this.returningFromScroll){this.armed=false;this.pinchStart=null;}
+    }
     let click=false;
     if(mode==='pinch'&&this.armed&&!this.latched){
       this.pinchStart??=now;
@@ -37,7 +61,7 @@ export class GestureEngine {
     const alpha=1-Math.pow(clamp(this.smoothing,.01,.95),delta/33);
     // Keep the selected location stable while fingers move together or scroll.
     if(!this.pointer)this.pointer=target;
-    else if(mode==='point')this.pointer={x:this.pointer.x+(target.x-this.pointer.x)*alpha,y:this.pointer.y+(target.y-this.pointer.y)*alpha};
+    else if(mode==='point'&&!this.returningFromScroll)this.pointer={x:this.pointer.x+(target.x-this.pointer.x)*alpha,y:this.pointer.y+(target.y-this.pointer.y)*alpha};
     let scrollDelta=0;
     if(mode==='scroll'){
       if(this.previousMode!=='scroll'){this.scrollY=points[8].y;this.scrollAnchor=this.scrollY;}

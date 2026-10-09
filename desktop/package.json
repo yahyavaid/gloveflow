@@ -1,1 +1,22 @@
-{"name":"gloveflow-desktop","productName":"GloveFlow","version":"0.1.0","description":"Experimental camera-based Mac cursor control","main":"main.cjs","private":true,"scripts":{"start":"electron .","test":"node --test tests/*.test.cjs","assets":"node scripts/prepare-assets.mjs","package":"node scripts/package.mjs"},"dependencies":{"@mediapipe/tasks-vision":"0.10.21","koffi":"3.3.2"},"devDependencies":{"electron":"44.7.0","@electron/packager":"20.3.0"}}
+{
+  "name": "gloveflow-desktop",
+  "productName": "GloveFlow",
+  "version": "0.2.0",
+  "description": "Experimental camera-based Mac cursor control",
+  "main": "main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs tests/*.test.mjs",
+    "assets": "node scripts/prepare-assets.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.21",
+    "koffi": "3.3.2"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "@electron/packager": "20.3.0"
+  }
+}

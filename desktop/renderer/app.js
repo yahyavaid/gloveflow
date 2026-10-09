@@ -2,8 +2,14 @@ import {GestureEngine} from './gestures.js';
 import {PoseHold} from './interaction.js';
 import {FilesetResolver,HandLandmarker} from './vendor/vision_bundle.mjs';
 const $=id=>document.getElementById(id),api=window.gloveflow,engine=new GestureEngine(),hold=new PoseHold();
-let stream=null,model=null,frameId=0,cameraRun=0,enabled=false,paused=false,enabling=false,lastInference=0,lastVideoTime=-1;
-const message=text=>$('message').textContent=text;
+let stream=null,model=null,frameId=0,cameraRun=0,enabled=false,paused=false,enabling=false,pausing=false,lastInference=0,lastVideoTime=-1;
+const message=text=>{if($('message').textContent!==text)$('message').textContent=text;};
+function showControlState(status){
+ if(!enabled||!status.enabled)return;
+ paused=status.paused;renderMode();
+ message(paused?'Cursor paused. Hold an open palm for one second to resume.':status.reason);
+}
+api.onControlState(showControlState);
 function renderMode(){
  $('mode').textContent=enabled?(paused?'CURSOR PAUSED':'MAC CONTROL ON'):stream?'CAMERA PREVIEW':'READY';
  $('control').disabled=!stream||enabled||enabling;$('control').textContent=enabled?'Mac control enabled':'Enable Mac control';
@@ -18,7 +24,7 @@ async function refreshStatus(){
 function stopLocal(reason='Camera and cursor stopped.'){
  cameraRun++;cancelAnimationFrame(frameId);stream?.getTracks().forEach(track=>track.stop());stream=null;
  model?.close();model=null;$('video').srcObject=null;$('empty').hidden=false;
- engine.reset();hold.reset();enabled=false;paused=false;enabling=false;lastVideoTime=-1;lastInference=0;
+ engine.reset();hold.reset();enabled=false;paused=false;enabling=false;pausing=false;lastVideoTime=-1;lastInference=0;
  $('camera-state').textContent='Camera off';$('camera').disabled=false;$('camera').textContent='Start camera';$('gesture').textContent='No hand detected';$('preview-pointer').hidden=true;renderMode();message(reason);
 }
 api.onStopped(reason=>stopLocal(typeof reason==='string'?reason:'Camera and cursor stopped.'));
@@ -41,9 +47,12 @@ async function startCamera(){
  }catch(error){if(run!==cameraRun)return;await api.stop();stopLocal(error.message||'Could not start tracking. Check camera access and retry.');}
 }
 async function togglePause(next){
- if(!enabled)return;
- const run=cameraRun;const status=await api.pause(next);if(run!==cameraRun||!status.enabled||!enabled)return;
- paused=status.paused;engine.reset();hold.reset();renderMode();message(paused?'Cursor paused. Hold an open palm for one second to resume.':'Show an open palm, then point to re-arm control.');
+ if(!enabled||pausing)return;
+ const run=cameraRun;pausing=true;
+ try{
+  const status=await api.pause(next);if(run!==cameraRun||!status.enabled||!enabled)return;
+  engine.reset();hold.reset();showControlState(status);
+ }finally{if(run===cameraRun)pausing=false;}
 }
 function track(now){
  if(!stream||!model)return;
@@ -51,7 +60,7 @@ function track(now){
   lastVideoTime=$('video').currentTime;lastInference=now;
   try{
    const gesture=engine.update(model.detectForVideo($('video'),now).landmarks?.[0],now);
-   $('gesture').textContent=gesture.mode==='none'?'No hand detected':gesture.mode==='pinch'?'Pinch · release to re-arm':gesture.mode==='scroll'?'Two-finger scrolling':gesture.mode==='fist'?'Fist':gesture.mode==='palm'?'Open palm':gesture.mode==='point'?'Pointing':'Resting';
+   $('gesture').textContent=gesture.mode==='none'?'No hand detected':gesture.mode==='pinch'?'Pinch':gesture.mode==='scroll'?'Two fingers':gesture.mode==='fist'?'Fist':gesture.mode==='palm'?'Open palm':gesture.mode==='point'?'Pointing':'Resting';
    const pointer=$('preview-pointer');pointer.hidden=!['point','pinch','scroll'].includes(gesture.mode);
    if(!pointer.hidden){pointer.style.left=`${8+gesture.x*84}%`;pointer.style.top=`${8+gesture.y*65}%`;}
    if(enabled){

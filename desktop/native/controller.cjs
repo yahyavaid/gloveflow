@@ -7,12 +7,13 @@ const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 /** Main-process-only gate. Renderer timestamps are never accepted or consulted. */
 function createController({driver, bounds = () => driver.bounds(), isTrusted = () => driver.isTrusted(), now = () => performance.now(), onStop = () => {}}) {
   if (!driver || !['move', 'click', 'scroll'].every(key => typeof driver[key] === 'function')) throw new TypeError('An input driver is required.');
-  let enabled = false, paused = false, armed = false, lastFrameAt = null, lastInputAt = -Infinity, lastClickAt = -Infinity;
+  let enabled = false, paused = false, armed = false, scrollReady = false, scrollSince = null, lastFrameAt = null, lastInputAt = -Infinity, lastClickAt = -Infinity;
   let reason = 'Desktop control is off.', restartRequired = false;
-  function status() { return {enabled, paused, armed, reason, restartRequired}; }
+  function status() { return {enabled, paused, armed, scrollReady, reason, restartRequired}; }
+  function disarm() { armed = false; scrollReady = false; scrollSince = null; }
   function stop(message = 'Desktop control stopped.', restart = false) {
     const wasEnabled = enabled;
-    enabled = false; paused = false; armed = false; lastFrameAt = null; lastInputAt = -Infinity;
+    enabled = false; paused = false; disarm(); lastFrameAt = null; lastInputAt = -Infinity;
     reason = String(message).slice(0, 240); restartRequired = Boolean(restart);
     if (wasEnabled) { try { onStop(status()); } catch {} }
     return status();
@@ -33,7 +34,7 @@ function createController({driver, bounds = () => driver.bounds(), isTrusted = (
     try {
       if (isTrusted() !== true) return stop('Grant Accessibility permission, then restart tracking.', true);
       displayBounds(); lastFrameAt = clock();
-      enabled = true; reason = 'Show an open palm or released pointing hand to arm control.'; restartRequired = false;
+      enabled = true; reason = 'Point to move the cursor, or hold two fingers to start scrolling.'; restartRequired = false;
     } catch { return stop('Desktop control could not start. Check permissions and restart tracking.', true); }
     return status();
   }
@@ -49,8 +50,8 @@ function createController({driver, bounds = () => driver.bounds(), isTrusted = (
     if (!enabled || typeof value !== 'boolean') return status();
     checkHeartbeat();
     if (!enabled) return status();
-    paused = value; armed = false;
-    reason = paused ? 'Desktop control is paused.' : 'Show an open palm or released pointing hand to re-arm control.';
+    paused = value; disarm();
+    reason = paused ? 'Desktop control is paused.' : 'Point to move the cursor, or hold two fingers to resume scrolling.';
     return status();
   }
   function validate(payload) {
@@ -69,12 +70,35 @@ function createController({driver, bounds = () => driver.bounds(), isTrusted = (
     if (!frame) return {...stop('Invalid tracking frame. Restart tracking.', true), accepted: false};
     let time;
     try { time = clock(); } catch { return {...stop('Tracking clock was interrupted. Restart tracking.', true), accepted: false}; }
+    const frameGap = time - lastFrameAt;
     lastFrameAt = time;
-    if (paused) { armed = false; return {...status(), accepted: true}; }
-    if (['none', 'rest', 'fist'].includes(frame.mode)) { armed = false; reason = 'Show an open palm or released pointing hand to re-arm control.'; return {...status(), accepted: true}; }
-    if (!armed) {
-      if (frame.mode === 'palm' || frame.mode === 'point') { armed = true; reason = 'Desktop control is active.'; }
+    if (paused) { disarm(); return {...status(), accepted: true}; }
+    if (['none', 'rest', 'fist'].includes(frame.mode)) {
+      disarm();
+      reason = frame.mode === 'none' ? 'Hand not detected. Point or hold two fingers to resume.' : 'Point to move the cursor, or hold two fingers to resume scrolling.';
       return {...status(), accepted: true};
+    }
+    if (frame.mode === 'scroll') {
+      // Scrolling has its own recovery gate: it must never arm a later pinch.
+      if (armed) { scrollReady = true; armed = false; }
+      if (!scrollReady) {
+        if (scrollSince === null || frameGap > 150) scrollSince = time;
+        if (time - scrollSince >= 150) {
+          scrollReady = true;
+          reason = 'Two-finger scrolling is active.';
+        } else reason = 'Hold two fingers steady briefly to resume scrolling.';
+        // Discard recovery movement instead of replaying a jump after the hold.
+        return {...status(), accepted: true};
+      }
+      reason = 'Two-finger scrolling is active.';
+    } else {
+      scrollReady = false; scrollSince = null;
+      if (!armed) {
+        if (frame.mode === 'palm' || frame.mode === 'point') { armed = true; reason = 'Desktop control is active.'; }
+        else reason = 'Release your pinch and point before clicking.';
+        return {...status(), accepted: true};
+      }
+      reason = 'Desktop control is active.';
     }
     if (frame.mode === 'palm') return {...status(), accepted: true};
     // Main process limits native event bursts to at most one frame per 16ms.
@@ -88,6 +112,7 @@ function createController({driver, bounds = () => driver.bounds(), isTrusted = (
         driver.move(x, y);
         if (frame.mode === 'pinch' && frame.click && time - lastClickAt >= 450) {
           driver.click(x, y); lastClickAt = time; armed = false;
+          reason = 'Release your pinch to click again.';
         }
       }
       lastInputAt = time;
